@@ -71,8 +71,8 @@ class Abbre_Repair(object):
 		self.params = []
 		self.x_user_item = tf.placeholder(tf.int32, [None, item_list_len], name="input_x_item")
 		self.x_item_user = tf.placeholder(tf.int32, [None, user_list_len], name="input_x_user")
-		self.embedding_user = tf.Variable(tf.random_uniform([num_users, 10], -1.0, 1.0), name='embedding_init_for_item', trainable=True)
-		self.embedding_item = tf.Variable(tf.random_uniform([num_items, 10], -1.0, 1.0), name='embedding_init_for_user', trainable=True)
+		self.embedding_user = tf.Variable(tf.random_uniform([num_users, 100], -1.0, 1.0), name='embedding_init_for_item', trainable=True)
+		self.embedding_item = tf.Variable(tf.random_uniform([num_items, 100], -1.0, 1.0), name='embedding_init_for_user', trainable=True)
 		self.y = tf.placeholder(tf.float32, [None], name="input_y") 
 		self.l2_loss = tf.constant(0.0)
 		# self.words = tf.reshape(tf.one_hot(tf.to_int32(tf.reshape(self.x, [-1])), Max_num, 1.0, 0.0), [-1, seq_words_len, RM_dim, RM_dim])   
@@ -112,8 +112,8 @@ class Abbre_Repair(object):
 		user_embedding = tf.nn.embedding_lookup(self.embedding_item, x)
 		
 		user_embedding = tf.expand_dims(user_embedding, -1)
-		user_embedding = tf.reshape(user_embedding,[batch_size, item_list_len*10])
-		W_user = weight_variable([item_list_len*10,128]) 
+		user_embedding = tf.reshape(user_embedding,[batch_size, item_list_len*100])
+		W_user = weight_variable([item_list_len*100,128]) 
 		b_user = bias_variable([128])
 		self.params.append(W_user)
 		self.params.append(b_user)
@@ -139,8 +139,8 @@ class Abbre_Repair(object):
 	def MF_item(self, x):
 		# embedding_init = tf.Variable(tf.random_uniform([num_users, 10], -1.0, 1.0), name='embedding_init_item', trainable=True)
 		item_embedding = tf.nn.embedding_lookup(self.embedding_user, x)
-		item_embedding = tf.reshape(item_embedding,[batch_size, user_list_len*10])
-		W_item = weight_variable([user_list_len*10, 128]) 
+		item_embedding = tf.reshape(item_embedding,[batch_size, user_list_len*100])
+		W_item = weight_variable([user_list_len*100, 128]) 
 		b_item = bias_variable([128])
 		self.params.append(W_item)
 		self.params.append(b_item)
@@ -364,8 +364,8 @@ def main(gpu_num, exp, percent):
 				time1 = time.time()
 				args_trained, train_Loss, train_J1, train_J2 =  mlp_updates(args_trained)
 				time2 = time.time()
-				print("Epoches {0}| Train_loss: {1} | J1: {2} | J2: {3} in {4} seconds".format(k , np.mean(train_Loss), np.mean(train_J1), np.mean(train_J2), time2-time1)) 
-				fw.write("Epoches {0}| Train_loss: {1} | J1: {2} | J2: {3}".format(k , np.mean(train_Loss), np.mean(train_J1), np.mean(train_J2)))
+				print("Epoches {0}| Train_loss: {1} in {2} seconds".format(k , np.mean(train_Loss), time2-time1)) 
+				fw.write("Epoches {0}| Train_loss: {1} ".format(k , np.mean(train_Loss)))
 			time3 = time.time()
 
 			args_trained = PQEF_updates(args_trained)
