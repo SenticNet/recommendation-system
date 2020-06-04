@@ -10,18 +10,23 @@ import copy
 import codecs
 import collections
 import math
-from evaluation import evaluate_admm
+from evaluation import evaluate_process, evaluate_admm
 import gram_schmidt
 import time
 from scipy import stats
 import sys
+
+
+###################################
+###Parameters are defined here#####
+###################################
 user_list_len = 80 # it is 80 for sst data, 400 for imdb data.
 item_list_len = 50
 binary_len = 64
 scale_r = binary_len/2
-num_users = 36328  ## the volumns of the users for amazon
-num_items = 30776  ## the volumns of the items for amazon
- 
+num_users = 7000  ## the volumns of the users for ml
+num_items = 4000 ##  the volumns of the items for ml 
+# 
 num_neg_sample = 1
 batch_size = 256 
 hidden_unit = binary_len  ## the hidden units of the LSTM
@@ -71,104 +76,352 @@ class Abbre_Repair(object):
 		self.params = []
 		self.x_user_item = tf.placeholder(tf.int32, [None, item_list_len], name="input_x_item")
 		self.x_item_user = tf.placeholder(tf.int32, [None, user_list_len], name="input_x_user")
-		self.embedding_user = tf.Variable(tf.random_uniform([num_users, 100], -1.0, 1.0), name='embedding_init_for_item', trainable=True)
-		self.embedding_item = tf.Variable(tf.random_uniform([num_items, 100], -1.0, 1.0), name='embedding_init_for_user', trainable=True)
+		self.embedding_user = tf.Variable(tf.random_uniform([num_users, 10], -1.0, 1.0), name='embedding_init_for_item', trainable=True)
+		self.embedding_item = tf.Variable(tf.random_uniform([num_items, 10], -1.0, 1.0), name='embedding_init_for_user', trainable=True)
 		self.y = tf.placeholder(tf.float32, [None], name="input_y") 
 		self.l2_loss = tf.constant(0.0)
 		# self.words = tf.reshape(tf.one_hot(tf.to_int32(tf.reshape(self.x, [-1])), Max_num, 1.0, 0.0), [-1, seq_words_len, RM_dim, RM_dim])   
 		self.E = tf.placeholder(tf.float32, [None, binary_len], name = "E")
 		self.F = tf.placeholder(tf.float32, [None, binary_len], name = "F")
-
+		# self.B = tf.placeholder(tf.float32, [None, binary_len], name = "B")
+		# self.D = tf.placeholder(tf.float32, [None, binary_len], name = "D")
 		self.P = tf.placeholder(tf.float32, [None, binary_len], name = "P")
 		self.Q = tf.placeholder(tf.float32, [None, binary_len], name = "Q")
 		self.mu = tf.placeholder(tf.float32, name = "mu")
-
-
-		B_i = self.MF_user(self.x_user_item)
-		D_j = self.MF_item(self.x_item_user)
-	
-		B_i = tf.nn.softsign(B_i)
-		D_j = tf.nn.softsign(D_j)
-
+		# B_i = self.LSTM_user_tf(self.x_user_item)  
+		# D_j = self.LSTM_item_tf(self.x_item_user)  
+		B_i = self.CNN_user(self.x_user_item)
+		D_j = self.CNN_item(self.x_item_user)
+		# B_i = self.MF_user(self.x_user_item)
+		# D_j = self.MF_item(self.x_item_user)
+		alpha = 20
+		B_i = tf.nn.softsign(alpha*B_i)
+		D_j = tf.nn.softsign(alpha*D_j)
+		
 
 		self.B_i = B_i
 		self.D_j = D_j
-
-
-		self.J1 =  (tf.nn.l2_loss(self.y - tf.reduce_sum(tf.multiply(B_i, D_j), reduction_indices = 1))) ## useful for ml
-
-		self.J2 = ((self.mu/2.0)*((tf.nn.l2_loss(self.B_i - (self.P + (1.0/self.mu)*self.E))) + tf.nn.l2_loss(self.D_j - (self.Q + 1.0/self.mu*self.F))))
-
-		self.loss_lstm = (self.J1 + self.J2)
+		
+		self.J1 =  tf.reduce_mean(tf.nn.l2_loss(self.y - tf.reduce_sum(tf.multiply(B_i, D_j), reduction_indices = 1))) ## useful for ml
+		
+		self.J2 = tf.reduce_mean((self.mu/2.0)*((tf.nn.l2_loss(self.B_i - (self.P + (1.0/self.mu)*self.E))) + tf.nn.l2_loss(self.D_j - (self.Q + 1.0/self.mu*self.F))))
+		
+		self.J3 = tf.nn.l2_loss(tf.trace(binary_len*tf.eye(batch_size) - tf.matmul(B_i, tf.transpose(B_i, perm = [0,1])))) + tf.nn.l2_loss(tf.trace(binary_len*tf.eye(batch_size) - tf.matmul(D_j, tf.transpose(D_j, perm = [0,1]))))
+		
+		self.loss_lstm = (self.J1 + self.J2 + self.J3)
 
 		self.acc = self.loss_lstm
 
-
-
- 
-
 	def MF_user(self, x):
-
+		# embedding_init = tf.Variable(tf.random_uniform([num_items, 10], -1.0, 1.0), name='embedding_init_user', trainable=True)
 		user_embedding = tf.nn.embedding_lookup(self.embedding_item, x)
 		
 		user_embedding = tf.expand_dims(user_embedding, -1)
-		user_embedding = tf.reshape(user_embedding,[batch_size, item_list_len*100])
-		W_user = weight_variable([item_list_len*100,128]) 
-		b_user = bias_variable([128])
+		user_embedding = tf.reshape(user_embedding,[batch_size, item_list_len*10])
+		W_user = weight_variable([item_list_len*10, binary_len]) 
+		b_user = bias_variable([binary_len])
 		self.params.append(W_user)
 		self.params.append(b_user)
 		self.l2_loss += tf.nn.l2_loss(W_user)
-		out = tf.nn.tanh(tf.nn.xw_plus_b(user_embedding, W_user, b_user))
+		out = tf.nn.softsign(tf.nn.xw_plus_b(user_embedding, W_user, b_user))
+	
 
-
-		W_user_out = weight_variable([128, binary_len]) 
-		b_user_out = bias_variable([binary_len])
-		self.params.append(W_user_out)
-		self.params.append(b_user_out)
-		self.l2_loss += tf.nn.l2_loss(W_user_out)
-		out = tf.nn.tanh(tf.nn.xw_plus_b(out, W_user_out, b_user_out))
-
-
-		W_user_linear = weight_variable([binary_len, binary_len]) 
-		b_user_linear = bias_variable([binary_len])
-		self.params.append(W_user_linear)
-		self.params.append(b_user_linear)
-		self.l2_loss += tf.nn.l2_loss(W_user_linear)
-		out = (tf.nn.xw_plus_b(out, W_user_linear, b_user_linear))
 		return out
 	def MF_item(self, x):
 		# embedding_init = tf.Variable(tf.random_uniform([num_users, 10], -1.0, 1.0), name='embedding_init_item', trainable=True)
 		item_embedding = tf.nn.embedding_lookup(self.embedding_user, x)
-		item_embedding = tf.reshape(item_embedding,[batch_size, user_list_len*100])
-		W_item = weight_variable([user_list_len*100, 128]) 
-		b_item = bias_variable([128])
+		item_embedding = tf.reshape(item_embedding,[batch_size, user_list_len*10])
+		W_item = weight_variable([user_list_len*10, binary_len]) 
+		b_item = bias_variable([binary_len])
 		self.params.append(W_item)
 		self.params.append(b_item)
 		self.l2_loss += tf.nn.l2_loss(W_item)
-		out = tf.nn.tanh(tf.nn.xw_plus_b(item_embedding, W_item, b_item))
-
-
-		W_item_out = weight_variable([128, binary_len]) 
-		b_item_out = bias_variable([binary_len])
-		self.params.append(W_item_out)
-		self.params.append(b_item_out)
-		self.l2_loss += tf.nn.l2_loss(W_item_out)
-		out = tf.nn.tanh(tf.nn.xw_plus_b(out, W_item_out, b_item_out))
-
-
-		W_user_linear = weight_variable([binary_len, binary_len]) 
-		b_user_linear = bias_variable([binary_len])
-		self.params.append(W_user_linear)
-		self.params.append(b_user_linear)
-		self.l2_loss += tf.nn.l2_loss(W_user_linear)
-		out = (tf.nn.xw_plus_b(out, W_user_linear, b_user_linear))
-
+		out = tf.nn.softsign(tf.nn.xw_plus_b(item_embedding, W_item, b_item))
+	
 
 		return out
+	def CNN_user(self, x):
+		with tf.name_scope("CNN_user"):
+			filter_sizes = [2,3,4,5,7,9,11, 13]
+			num_filters = [200,200,300,200, 200, 100,200, 200]  
+			user_embedding = tf.nn.embedding_lookup(self.embedding_item, x)
+			# user_embedding = tf.nn.dropout(user_embedding, self.dropout_keep_prob)
+			user_embedding = tf.expand_dims(user_embedding, -1)
 
+			pooled_outputs = []
+			 
+			for filter_size, num_filter in zip(filter_sizes, num_filters):
+				with tf.name_scope("Senti-conv"):
+					filter_shape = [filter_size, 10, 1, num_filter]
+					W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.01),name="W_r", trainable=True) 
+					b = tf.Variable(tf.constant(0.01, shape=[num_filter]), name="b_r", trainable=True)
+					user_conv = tf.nn.conv2d(user_embedding, W, strides=[1,1,1,1], padding="VALID", name="conv") 
+					self.params.extend([W, b])
+					h = tf.nn.relu(tf.nn.bias_add(user_conv, b), name="relu_r")
+					h = batch_norm(h, num_filter, scope='user_conv-bn1')
 
+					pooled1 =tf.nn.avg_pool(h, ksize=[1, item_list_len + 1 - filter_size,1,1],strides=[1,1,1,1], padding="VALID", name="pooled")
+					pooled_outputs.append(pooled1)
+					self.l2_loss += tf.nn.l2_loss(W)
+					self.l2_loss += tf.nn.l2_loss(b)
+			num_filter = sum(num_filters) 
+			pooled = tf.concat(pooled_outputs,3)
+			pooled_flat = tf.reshape(pooled, [-1, num_filter])  
+			W_bin_user = weight_variable([num_filter, binary_len])
+			b_bin_user = bias_variable([binary_len])
+			self.params.append(W_bin_user)
+			self.params.append(b_bin_user)
+			self.l2_loss += tf.nn.l2_loss(W_bin_user)
+			out = (tf.nn.xw_plus_b(pooled_flat, W_bin_user, b_bin_user))
+			return out
+	def CNN_item(self, x):
+		with tf.name_scope("CNN_item"):
+			filter_sizes = [2,3,4,5,7,9,11, 13]
+			num_filters = [200,200,300,200, 200, 100,200, 200]  
+			item_embedding = tf.nn.embedding_lookup(self.embedding_user, x) 
+			item_embedding = tf.expand_dims(item_embedding, -1)
 
+			pooled_outputs = []
+			 
+			for filter_size, num_filter in zip(filter_sizes, num_filters):
+				with tf.name_scope("Senti-conv"):
+					filter_shape = [filter_size, 10, 1, num_filter]
+					W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.01),name="W_r", trainable=True) 
+					b = tf.Variable(tf.constant(0.01, shape=[num_filter]), name="b_r", trainable=True)
+					item_conv = tf.nn.conv2d(item_embedding, W, strides=[1,1,1,1], padding="VALID", name="conv") 
+					self.params.extend([W, b])
+					h = tf.nn.relu(tf.nn.bias_add(item_conv, b), name="relu_r")
+					h = batch_norm(h, num_filter, scope='item_conv-bn1')
+
+					pooled1 =tf.nn.avg_pool(h, ksize=[1, user_list_len + 1 - filter_size,1,1],strides=[1,1,1,1], padding="VALID", name="pooled")
+					pooled_outputs.append(pooled1)
+					self.l2_loss += tf.nn.l2_loss(W)
+					self.l2_loss += tf.nn.l2_loss(b)
+			num_filter = sum(num_filters) 
+			pooled = tf.concat(pooled_outputs,3)
+			pooled_flat = tf.reshape(pooled, [-1, num_filter])  
+			W_bin_item = weight_variable([num_filter, binary_len])
+			b_bin_item = bias_variable([binary_len])
+			self.params.append(W_bin_item)
+			self.params.append(b_bin_item)
+			self.l2_loss += tf.nn.l2_loss(W_bin_item)
+			out = (tf.nn.xw_plus_b(pooled_flat, W_bin_item, b_bin_item))
+			return out
+
+	def LSTM_user_tf(self, x):
+		# x = tf.reshape(tf.one_hot(tf.to_int32(tf.reshape(x, [-1])), num_items, 1.0, 0.0), [-1, num_items, item_list_len])
+		num_hidden = 10
+		with tf.variable_scope("LSTM_user_tf"):
+			cell_fw = tf.contrib.rnn.GRUCell(num_hidden)
+			cell_bw = tf.contrib.rnn.GRUCell(num_hidden)
+			# cell_fw = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple = True)
+			# cell_bw = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple = True)
+			inputs = tf.nn.embedding_lookup(self.embedding_item, x, validate_indices=False)
+			# inputs = tf.one_hot(x, depth = num_items, on_value=1.0, off_value=0.0)
+			val, state = tf.nn.bidirectional_dynamic_rnn(cell_fw = cell_fw, cell_bw = cell_bw, inputs = inputs, dtype=tf.float32)
+			val_fw = tf.transpose(val[0], [1, 0, 2])
+			val_fw = tf.gather(val_fw, int(val_fw.get_shape()[0]) - 1)
+			val_bw = tf.transpose(val[1], [1, 0, 2])
+			val_bw = tf.gather(val_bw, int(val_bw.get_shape()[0]) - 1)
+			val = tf.concat([val_fw, val_bw], 1)
+			W_encoder = weight_variable([num_hidden*2, hidden_unit])
+			b_encoder = bias_variable([hidden_unit])
+			self.params.append(W_encoder)
+			self.params.append(b_encoder)
+			self.l2_loss += tf.nn.l2_loss(W_encoder)
+	 
+			out = (tf.nn.xw_plus_b(val, W_encoder, b_encoder))
+		return out
+	def LSTM_item_tf(self, x):
+		# x = tf.reshape(tf.one_hot(tf.to_int32(tf.reshape(x, [-1])), num_users, 1.0, 0.0), [-1, num_users, user_list_len])
+		num_hidden = 30
+		with tf.variable_scope("LSTM_item_tf"):
+			cell_fw = tf.contrib.rnn.GRUCell(num_hidden)
+			cell_bw = tf.contrib.rnn.GRUCell(num_hidden)
+			# cell_fw = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple = True)
+			# cell_bw = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple = True)
+			inputs = tf.nn.embedding_lookup(self.embedding_user, x, validate_indices=False)
+			# inputs = tf.one_hot(x, depth=num_users, on_value = 1.0, off_value = 0.0)
+			val, state = tf.nn.bidirectional_dynamic_rnn(cell_fw = cell_fw, cell_bw = cell_bw, inputs = inputs, dtype=tf.float32)
+			val_fw = tf.transpose(val[0], [1, 0, 2])
+			val_fw = tf.gather(val_fw, int(val_fw.get_shape()[0]) - 1)
+			val_bw = tf.transpose(val[1], [1, 0, 2])
+			val_bw = tf.gather(val_bw, int(val_bw.get_shape()[0]) - 1)
+			val = tf.concat([val_fw, val_bw], 1)
+			W_encoder = weight_variable([num_hidden*2, hidden_unit])
+			b_encoder = bias_variable([hidden_unit])
+			self.params.append(W_encoder)
+			self.params.append(b_encoder)
+			self.l2_loss += tf.nn.l2_loss(W_encoder)
+			out = (tf.nn.xw_plus_b(val, W_encoder, b_encoder))
+		return out
+
+	def LSTM_user(self, x):
+		lstm_user_unit = self.lstm_user_unit(self.params) 
+		lstm_out_raw = tf.zeros([batch_size, hidden_unit]) 
+		states = tf.stack([lstm_out_raw, lstm_out_raw])
+		def _dec_recurrence(i, states): 
+			x_t = x[:,i]
+			x_t = tf.one_hot(indices = x_t, depth = num_items) 
+
+			states = lstm_user_unit(x_t, states) 
+			i = i + 1
+			return i, states
+
+		with tf.name_scope("lstm_user"):
+			_, final_states = tf.while_loop(
+				cond = lambda i, _1: i < item_list_len ,
+				body = _dec_recurrence,
+				loop_vars = (tf.constant(0, dtype=tf.int32), states))
+		hidden, out = tf.unstack(final_states)
+		return out
+
+	def LSTM_item(self, x):
+		lstm_item_unit = self.lstm_item_unit(self.params) 
+		lstm_out_raw = tf.zeros([batch_size, hidden_unit]) 
+		states = tf.stack([lstm_out_raw, lstm_out_raw])
+		def _dec_recurrence(j, states): 
+			x_t = x[:,j]
+			x_t = tf.one_hot(indices = x_t, depth = num_users)
+			# x_t = tf.contrib.layers.batch_norm(x_t, center=True)
+			states = lstm_item_unit(x_t, states) 
+			j = j + 1
+			return j, states
+
+		with tf.name_scope("lstm_item"):
+			_, final_states = control_flow_ops.while_loop(
+				cond = lambda j, _1: j < user_list_len ,
+				body = _dec_recurrence,
+				loop_vars = (tf.constant(0, dtype=tf.int32), states))
+		hidden, out = tf.unstack(final_states)
+		return out
  
+ 
+	def lstm_user_unit(self, params): 
+		with tf.name_scope("lstm-user-unit"):  
+			self.Wi = weight_variable([num_items, hidden_unit]) 
+			self.Ui = weight_variable([hidden_unit, hidden_unit])
+			self.bi = bias_variable([hidden_unit])
+
+			self.Wf = weight_variable([num_items, hidden_unit]) 
+			self.Uf = weight_variable([hidden_unit, hidden_unit])
+			self.bf = bias_variable([hidden_unit])
+
+			self.Wog = weight_variable([num_items, hidden_unit]) 
+			self.Uog = weight_variable([hidden_unit, hidden_unit])
+			self.bog = bias_variable([hidden_unit])
+
+			self.Wc = weight_variable([num_items, hidden_unit]) 
+			self.Uc = weight_variable([hidden_unit, hidden_unit])
+			self.bc = bias_variable([hidden_unit])
+ 
+  
+			params.extend([
+				 self.Wi, self.Ui, self.bi, 
+				 self.Wf, self.Uf, self.bf, 
+				 self.Wog, self.Uog, self.bog, 
+				 self.Wc, self.Uc, self.bc])
+
+			def unit(x, hidden_memory_tm1):
+
+				previous_hidden_state, c_prev = tf.unstack(hidden_memory_tm1)
+				# Input Gate
+				i = tf.sigmoid(
+					tf.matmul(x, self.Wi) + 
+					tf.matmul(previous_hidden_state, self.Ui) + self.bi
+				)
+
+				# Forget Gate
+				f = tf.sigmoid(
+					tf.matmul(x, self.Wf) + 
+					tf.matmul(previous_hidden_state, self.Uf) + self.bf
+				)
+
+				# Output Gate
+				o = tf.sigmoid(
+					tf.matmul(x, self.Wog) +  
+					tf.matmul(previous_hidden_state, self.Uog) + self.bog
+				)
+
+				# New Memory Cell
+				c_ = tf.nn.tanh(
+					tf.matmul(x, self.Wc) + 
+					tf.matmul(previous_hidden_state, self.Uc) + self.bc
+				)
+
+				# Final Memory cell
+				c = f * c_prev + i * c_ 
+
+				# Current Hidden state
+				current_hidden_state = o * tf.nn.tanh(c)
+
+				return tf.stack([current_hidden_state, c])
+
+		return unit
+
+
+	def lstm_item_unit(self, params):
+		# Weights and Bias for input and hidden tensor
+		with tf.name_scope("lstm-item-unit"):  
+			self.Wi = weight_variable([num_users, hidden_unit]) 
+			self.Ui = weight_variable([hidden_unit, hidden_unit])
+			self.bi = bias_variable([hidden_unit])
+
+			self.Wf = weight_variable([num_users, hidden_unit]) 
+			self.Uf = weight_variable([hidden_unit, hidden_unit])
+			self.bf = bias_variable([hidden_unit])
+
+			self.Wog = weight_variable([num_users, hidden_unit]) 
+			self.Uog = weight_variable([hidden_unit, hidden_unit])
+			self.bog = bias_variable([hidden_unit])
+
+			self.Wc = weight_variable([num_users, hidden_unit]) 
+			self.Uc = weight_variable([hidden_unit, hidden_unit])
+			self.bc = bias_variable([hidden_unit])
+ 
+  
+			params.extend([
+				 self.Wi, self.Ui, self.bi, 
+				 self.Wf, self.Uf, self.bf, 
+				 self.Wog, self.Uog, self.bog, 
+				 self.Wc, self.Uc, self.bc])
+
+			def unit(x, hidden_memory_tm1):
+
+				previous_hidden_state, c_prev = tf.unstack(hidden_memory_tm1)
+				# Input Gate
+				i = tf.sigmoid(
+					tf.matmul(x, self.Wi) + 
+					tf.matmul(previous_hidden_state, self.Ui) + self.bi
+				)
+
+				# Forget Gate
+				f = tf.sigmoid(
+					tf.matmul(x, self.Wf) + 
+					tf.matmul(previous_hidden_state, self.Uf) + self.bf
+				)
+
+				# Output Gate
+				o = tf.sigmoid(
+					tf.matmul(x, self.Wog) +  
+					tf.matmul(previous_hidden_state, self.Uog) + self.bog
+				)
+
+				# New Memory Cell
+				c_ = tf.nn.tanh(
+					tf.matmul(x, self.Wc) + 
+					tf.matmul(previous_hidden_state, self.Uc) + self.bc
+				)
+
+				# Final Memory cell
+				c = f * c_prev + i * c_ 
+
+				# Current Hidden state
+				current_hidden_state = o * tf.nn.tanh(c)
+
+				return tf.stack([current_hidden_state, c])
+
+		return unit 
 def scale_rate(rate):
 	rate = float(rate)
 	if (rate)>=1:
@@ -266,23 +519,18 @@ def load_evaluation(filename):
 	return evalueation_set
 
 
-def p_value(obs):
-	length = len(obs)
-	exp = [1.]*length
-	p = stats.chisquare(obs, f_exp = exp)[1]
-	return float(p)
-
 
 
 def main(gpu_num, exp, percent): 
 	model = Abbre_Repair()
 	params = model.params  
-	train_step = tf.train.AdamOptimizer(1e-4).minimize(model.loss_lstm)  
+	train_step = tf.train.AdamOptimizer(5e-4).minimize(model.loss_lstm)  
 
 	### loading the data from the files,
-	file_train = './data/amazon.train.rating'
-	file_test = './data/amazon.test.rating'
-	file_negative = './data/amazon.test.negative'
+	file_train = './data/ml-1m.train.rating'
+	file_test = './data/ml-1m.test.rating'
+	file_negative = './data/ml-1m.test.negative'
+
 	train_set, test_set= load_data(file_train, file_test)
 	user_item_list, item_user_list, user_item_rate = train_set
 	user_item_list_test, item_user_list_test, user_item_rate_test = test_set
@@ -306,16 +554,15 @@ def main(gpu_num, exp, percent):
 		for item in item_list:   #### item_list is a list
 			# train_user_index.append(user)
 			# train_item_index.append(item)
-			if item in item_user_list:
-				user_list = item_user_list[item]
-				rate = user_item_rate[(user, item)]
+			user_list = item_user_list[item]
+			rate = user_item_rate[(user, item)]
 
-				train_data_user.append(item_list)
-				train_data_item.append(user_list)
-				train_data_y.append(rate)				
-				train_user_index.append(user)
-				train_item_index.append(item)
-
+			train_data_user.append(item_list)
+			train_data_item.append(user_list)
+			train_data_y.append(rate)				
+			train_user_index.append(user)
+			train_item_index.append(item)
+	
 
 
 
@@ -350,7 +597,7 @@ def main(gpu_num, exp, percent):
 		summary_writer_train = tf.summary.FileWriter('./'+exp+'/train',graph=sess.graph)
 		summary_writer_test = tf.summary.FileWriter('./'+exp+'/test') 
 		fw = open('./'+exp+'/log.txt','w')
-	
+		
 		def train_process(k, args_trained, fw): 
 
 			### the training LSTM of the frameworks;
@@ -362,20 +609,22 @@ def main(gpu_num, exp, percent):
 			time0 = time.time()
 			for ii in range(ite):
 				time1 = time.time()
-				args_trained, train_Loss, train_J1, train_J2 =  mlp_updates(args_trained)
+				args_trained, train_Loss, train_J1, train_J2 =  Lstm_updates(args_trained)
 				time2 = time.time()
-				print("Epoches {0}| Train_loss: {1} in {2} seconds".format(k , np.mean(train_Loss), time2-time1)) 
-				fw.write("Epoches {0}| Train_loss: {1} ".format(k , np.mean(train_Loss)))
+				print("Epoches {0}| Train_loss: {1} | J1: {2} | J2: {3} in {4} seconds".format(k , np.mean(train_Loss), np.mean(train_J1), np.mean(train_J2), time2-time1)) 
+				fw.write("Epoches {0}| Train_loss: {1} | J1: {2} | J2: {3}".format(k , np.mean(train_Loss), np.mean(train_J1), np.mean(train_J2)))
 			time3 = time.time()
 
+
 			args_trained = PQEF_updates(args_trained)
+
 
 			time4 = time.time()
 			print ("Time: LSTM %.3f, PQE %.3f"%(time3-time0, time4-time3))
 			save_path = saver.save(sess, "./"+exp+"/model.ckpt") 
 			return args_trained
 
-		def mlp_updates(args_trained): 
+		def Lstm_updates(args_trained): 
 			train_steps = int(len(train_data_y)/batch_size)
 			train_used = random.sample(range(train_steps), int(0.1*train_batches))
 			train_Loss = []
@@ -402,10 +651,10 @@ def main(gpu_num, exp, percent):
 
 				# B_u, B_s, B_v = np.linalg.svd(batch_B, full_matrices = False)
 				# B = np.array(B_u.dot(B_v.T)>=0, dtype=float)-0.5
-				batch_B = np.sign(batch_B)
+				batch_P = np.sign(batch_B)
 				# D_u, D_s, D_v = np.linalg.svd(batch_D, full_matrices = False)
 				# D = np.array(D_u.dot(D_v.T)>=0, dtype=float)-0.5
-				batch_D = np.sign(batch_D)
+				batch_Q = np.sign(batch_D)
 				train_Loss.append(loss)
 				train_J1.append(J1)
 				train_J2.append(J2)
@@ -416,6 +665,8 @@ def main(gpu_num, exp, percent):
 					item_index = batch_item_index[kk]
 					args_trained["B"][user_index] = batch_B[kk]
 					args_trained["D"][item_index] = batch_D[kk]
+					args_trained["P"][user_index] = batch_P[kk]
+					args_trained["Q"][item_index] = batch_Q[kk]
 				time_lstm_e = time.time()
 				# if step%1000==0:
 				#	print (step, J1, J2, time_lstm_e-time_lstm_s)
@@ -424,34 +675,13 @@ def main(gpu_num, exp, percent):
 			# Update P 
 			_B = args_trained["B"]
 			_E = args_trained["E"]
-			T1 = _B - 1.0/args_trained["mu"]*_E
-			# T1_marginal = np.mean(T1, axis=1)
-			# T1_new = [T1[i]-T1_marginal[i] for i in range(len(T1))]
-			T1_u, T1_s, T1_v = np.linalg.svd(T1, full_matrices = False)
-			_T1 = T1_u.dot(T1_v.T)
-			T1_new = np.insert(_T1, [0], np.ones([1, binary_len]), axis = 0)
-			_P = np.sqrt(num_users)*gram_schmidt.gs(T1_new)[1:]
-			# P_u, P_s, P_v = np.linalg.svd(_P, full_matrices = False)
-			# _P = P_u.dot(P_v.T)
-			args_trained["P"] = _P
-			# time3 = time.time()
-			# Update Q
+			_P = args_trained["P"]
+			_Q = args_trained["Q"]
 			_D = args_trained["D"]
-			_F = args_trained["F"]
-			## build the T2
-			T2 = _D - 1.0/args_trained["mu"]*_F
-			# T2_marginal = np.mean(T2, axis=1)
-			# T2_new = [T2[i]-T2_marginal[i] for i in range(len(T2))]
-			## decomposition using svd
-			T2_u, T2_s, T2_v = np.linalg.svd(T2, full_matrices = False)
-			_T2 = T2_u.dot(T2_v.T)
-			T2_new = np.insert(_T2, [0], np.ones([1, binary_len]), axis = 0)
-			_Q = np.sqrt(num_items)*gram_schmidt.gs(T2_new)[1:]
-			# Q_u, Q_s, Q_v = np.linalg.svd(_Q, full_matrices = False)
-			# _Q = Q_u.dot(Q_v.T)
-			args_trained["Q"] = _Q
-			# time4 = time.time()
-			# Update E, F, mu
+			_F = args_trained["F"] 
+
+
+
 			_E_new = _E + args_trained["mu"]*(_P - _B)
 			_F_new = _F + args_trained["mu"]*(_Q - _D)
 			mu = min([rho*args_trained["mu"], mu_max])
@@ -470,20 +700,15 @@ def main(gpu_num, exp, percent):
 			# obj1 = np.linalg.norm((_B-_P),'fro')
 			# obj2 = np.linalg.norm((_D-_Q),'fro')
 			return obj2+obj1
-
-
-		epos = 50
+		epos = 2000
 
 		args_trained = PQEF_updates(args_trained)
 		for i in range(epos):
 			args_trained = train_process(i, args_trained, fw) 
 
-			if i%1==0:
-				hit_5, ndcg_5, hit_10, ndcg_10, hit_15, ndcg_15, hit_20, ndcg_20 = evaluate_admm(evalueation_set, args_trained["B"], args_trained["D"])
-				# print ("Hit5: %.4f, and ndcg5: %.4f Hit10: %.4f, and ndcg10: %.4f Hit15: %.4f, and ndcg15: %.4f Hit20: %.4f, and ndcg20: %.4f\n"%(np.mean(hit_5), np.mean(ndcg_5),np.mean(hit_10), np.mean(ndcg_10),np.mean(hit_15), np.mean(ndcg_15),np.mean(hit_20), np.mean(ndcg_20)))
-				fw.write("Hit5: %.4f, and ndcg5: %.4f Hit10: %.4f, and ndcg10: %.4f Hit15: %.4f, and ndcg15: %.4f Hit20: %.4f, and ndcg20: %.4f\n"%(np.mean(hit_5), np.mean(ndcg_5),np.mean(hit_10), np.mean(ndcg_10),np.mean(hit_15), np.mean(ndcg_15),np.mean(hit_20), np.mean(ndcg_20)))
-
-gpu_num = sys.argv[1]
-exp = sys.argv[2] #'exp1'
-percent = float(sys.argv[3])
-main(gpu_num, exp, percent)
+		
+if __name__ == "__main__":
+	gpu_num = 0#sys.argv[1]
+	exp = 'exp1' #sys.argv[2] #'exp1'
+	percent = 0.97#float(sys.argv[3])
+	main(gpu_num, exp, percent)
