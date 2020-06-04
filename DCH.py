@@ -527,9 +527,9 @@ def main(gpu_num, exp, percent):
 	train_step = tf.train.AdamOptimizer(5e-4).minimize(model.loss_lstm)  
 
 	### loading the data from the files,
-	file_train = './data/ml-1m.train.rating'
-	file_test = './data/ml-1m.test.rating'
-	file_negative = './data/ml-1m.test.negative'
+	file_train = './data/amazon.train.rating'
+	file_test = './data/amazon.test.rating'
+	file_negative = './data/amazon.test.negative'
 
 	train_set, test_set= load_data(file_train, file_test)
 	user_item_list, item_user_list, user_item_rate = train_set
